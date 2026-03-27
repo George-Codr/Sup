@@ -670,16 +670,45 @@ _NCURSES_TERMUX_BASE_URL="https://packages.termux.dev/apt/termux-main/pool/main/
 # URL-encode '+' as '%2B' for the ncurses version used in download URLs.
 _ncurses_version_url() { printf '%s' "${_NCURSES_TERMUX_VERSION//+/%2B}"; }
 
-# SHA-256 checksums for source tarballs we download and build ourselves.
-# BeeWare pre-builts are verified by the GitHub release signing; add hashes
-# here when you need offline verification of the source tarballs.
-# Generate with: sha256sum <file>  or  shasum -a 256 <file>
-declare -A _DEP_SHA256=(
-    ["bzip2-1.0.8.tar.gz"]="ab5a03176ee106d3f0fa90e381da478ddae405918153cca248e682cd0c4a2269"
-    ["xz-5.6.3.tar.xz"]="b1d45295d3a34da6b3oe7d2a5f5d0e3b7a90e0b7c4a8b6e3f2a1c9d8e7b6a5c4"
-)
-# NOTE: The hash values above are PLACEHOLDERS.  Replace with real SHA-256
-# values by running sha256sum on the cached tarballs after a first download.
+# _strip_sentinels <varname>
+# GitHub Actions injects __ prefix/suffix when a workflow env: block sets a
+# variable to a value that expands from an empty expression, or when env vars
+# bleed across job steps.  Strip them in-place using only bash 3.2-compatible
+# syntax (no namerefs, no declare -n).
+_strip_sentinels() {
+    local _var="$1"
+    local _val="${!_var}"
+    _val="${_val#__}"   # strip leading __
+    _val="${_val%__}"   # strip trailing __
+    _val="${_val// /}"  # strip stray spaces
+    eval "${_var}=\${_val}"
+}
+
+# _sanitise_dep_urls — strip __ sentinels from every URL global before use.
+# Called once at the start of _build_deps.
+_sanitise_dep_urls() {
+    local _v
+    for _v in \
+        _BEEWARE_DEPS_BASE_URL    \
+        _LIBFFI_TERMUX_BASE_URL   \
+        _READLINE_TERMUX_BASE_URL \
+        _LIBUUID_TERMUX_BASE_URL  \
+        _NCURSES_TERMUX_BASE_URL; do
+        _strip_sentinels "$_v"
+    done
+}
+
+# SHA-256 lookup for source tarballs we download and build ourselves.
+# Implemented as a case statement for bash 3.2 compatibility (macOS ships
+# bash 3.2; declare -A requires bash 4+).
+# Values marked PLACEHOLDER must be replaced with real sha256sum output.
+_dep_sha256() {
+    case "$1" in
+        "bzip2-1.0.8.tar.gz") printf '%s' "ab5a03176ee106d3f0fa90e381da478ddae405918153cca248e682cd0c4a2269" ;;
+        "xz-5.6.3.tar.xz")    printf '%s' "PLACEHOLDER_replace_with_real_sha256" ;;
+        *)                     printf '%s' "" ;;
+    esac
+}
 
 _build_deps() {
     if [[ "$TERMUX_ON_DEVICE_BUILD" == "true" ]]; then
@@ -688,6 +717,10 @@ _build_deps() {
         export CROSS_DEPS_PREFIX
         return 0
     fi
+
+    # Strip any __ sentinel wrapping that GitHub Actions may have injected
+    # into URL globals before we make any network requests.
+    _sanitise_dep_urls
 
     CROSS_DEPS_PREFIX="${TMPDIR:-/tmp}/python-build/deps"
     export CROSS_DEPS_PREFIX
@@ -703,10 +736,10 @@ _build_deps() {
     local _cflags="${CFLAGS:-}"
     local _ldflags="${LDFLAGS:-}"
 
-    # ── helper: download + extract ────────────────────────────────────────────
+    # ── helper: download + extract source tarball ─────────────────────────────
     _dl_extract() {
         local url="$1" tarball="$2" dir="$3"
-        local sha="${_DEP_SHA256[$tarball]:-}"
+        local sha; sha="$(_dep_sha256 "$tarball")"
         _download "$url" "${TERMUX_PKG_CACHEDIR}/${tarball}" "$sha"
         if [[ -d "$dir" ]]; then
             _info "  Already extracted: $(basename "$dir")"
